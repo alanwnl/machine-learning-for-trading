@@ -1,0 +1,41 @@
+# Large files
+*.h5
+*.hdf5
+*.pkl
+*.pickle
+*.csv
+*.xls
+*.xlsx
+*.zip
+*.gz
+*.bz2
+*.7z
+*.rar
+*.tar
+*.tgz
+*.dmg
+*.iso
+*.img
+*.exe
+*.dll
+*.so
+*.o
+*.a
+*.lib
+*.nc
+*.ipynb
+*.pyc
+
+# Data files
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# Other
+.ipynb_checkpoints/
+__pycache__/
+.DS_Store
+.Trash
+.vscode/
+.idea/

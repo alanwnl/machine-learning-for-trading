@@ -41,11 +41,11 @@ def load_symbols(tickers):
 
 if __name__ == '__main__':
     prices = load_prices()
-    print(prices.info(null_counts=True))
+    print(prices.info(show_counts=True))
     tickers = prices.index.unique('ticker')
 
     symbols = load_symbols(tickers)
-    print(symbols.info(null_counts=True))
+    print(symbols.info(show_counts=True))
     symbols.to_hdf('stooq.h5', 'jp/equities', format='t')
 
     dates = prices.index.unique('date')
