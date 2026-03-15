@@ -23,8 +23,9 @@ sns.set_style('whitegrid')
 
 # %%
 data_path = Path('data')
-itch_store = str(data_path / 'itch.h5')
-order_book_store = str(data_path / 'order_book.h5')
+SOURCE_FILE = '10302019.NASDAQ_ITCH50.gz'
+itch_store = str(data_path / (Path(SOURCE_FILE).stem + '.h5'))
+order_book_store = str(data_path / (Path(SOURCE_FILE).stem + '_order_book.h5'))
 stock = 'AAPL'
 date = '20191030'
 title = '{} | {}'.format(stock, pd.to_datetime(date).date())

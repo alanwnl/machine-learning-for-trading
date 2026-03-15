@@ -42,8 +42,9 @@ def format_time(t):
 
 # %%
 data_path = Path('data') # set to e.g. external harddrive
-itch_store = str(data_path / 'itch.h5')
-order_book_store = data_path / 'order_book.h5'
+SOURCE_FILE = '10302019.NASDAQ_ITCH50.gz'
+itch_store = str(data_path / (Path(SOURCE_FILE).stem + '.h5'))
+order_book_store = data_path / (Path(SOURCE_FILE).stem + '_order_book.h5')
 date = '10302019'
 
 # %% [markdown]
@@ -69,14 +70,16 @@ order_dict = {-1: 'sell', 1: 'buy'}
 def get_messages(date, stock=stock):
     """Collect trading messages for given stock"""
     with pd.HDFStore(itch_store) as store:
-        stock_locate = store.select('R', where='stock = stock').stock_locate.iloc[0]
-        target = f'stock_locate = {int(stock_locate)}'
+        # Fixed-format HDF5: load full table, filter in memory (fast with 128GB RAM)
+        r_data = store['R']
+        stock_locate = r_data[r_data.stock == stock].stock_locate.iloc[0]
 
         data = {}
         # trading message types
         messages = ['A', 'F', 'E', 'C', 'X', 'D', 'U', 'P', 'Q']
         for m in messages:
-            data[m] = store.select(m, where=target).drop('stock_locate', axis=1).assign(type=m)
+            df = store[m]
+            data[m] = df[df.stock_locate == stock_locate].drop('stock_locate', axis=1).assign(type=m)
 
     order_cols = ['order_reference_number', 'buy_sell_indicator', 'shares', 'price']
     orders = pd.concat([data['A'], data['F']], sort=False, ignore_index=True).loc[:, order_cols]
@@ -105,6 +108,8 @@ def get_messages(date, stock=stock):
 
 
 # %%
+print("Loading and filtering messages...")
+SCRIPT_START = time()
 messages = get_messages(date=date)
 messages.info(show_counts=True)
 
@@ -151,28 +156,42 @@ with pd.HDFStore(order_book_store) as store:
 # The `add_orders()` function accumulates sell orders in ascending, and buy orders in descending order for a given timestamp up to the desired level of depth:
 
 # %%
-def add_orders(orders, buysell, nlevels):
-    """Add orders up to desired depth given by nlevels;
-        sell in ascending, buy in descending order
+import bisect
+
+def add_orders_fast(orders, buysell, nlevels, active_prices):
+    """Add orders up to desired depth given by nlevels using pre-sorted price lists.
+        sell (buysell=-1) in ascending, buy (buysell=1) in descending order
     """
     new_order = []
-    items = sorted(orders.copy().items())
+    prices = active_prices[buysell]
+    
     if buysell == 1:
-        items = reversed(items)  
-    for i, (p, s) in enumerate(items, 1):
-        new_order.append((p, s))
-        if i == nlevels:
-            break
-    return orders, new_order
+        # Buy: highest bids first (end of sorted array)
+        start_idx = max(0, len(prices) - nlevels)
+        for p in reversed(prices[start_idx:]):
+            new_order.append((p, orders[p]))
+    else:
+        # Sell: lowest asks first (start of sorted array)
+        end_idx = min(len(prices), nlevels)
+        for p in prices[:end_idx]:
+            new_order.append((p, orders[p]))
+            
+    return new_order
 
 # %%
 def save_orders(orders, append=False):
-    cols = ['price', 'shares']
     for buysell, book in orders.items():
-        df = (pd.concat([pd.DataFrame(data=data,
-                                     columns=cols)
-                         .assign(timestamp=t) 
-                         for t, data in book.items()]))
+        if not book:
+            continue
+            
+        timestamps, prices, shares = [], [], []
+        for t, data in book.items():
+            for p, s in data:
+                timestamps.append(t)
+                prices.append(p)
+                shares.append(s)
+                
+        df = pd.DataFrame({'price': prices, 'shares': shares, 'timestamp': timestamps})
         key = f'{stock}/{order_dict[buysell]}'
         df.loc[:, ['price', 'shares']] = df.loc[:, ['price', 'shares']].astype(int)
         with pd.HDFStore(order_book_store) as store:
@@ -187,6 +206,7 @@ def save_orders(orders, append=False):
 # %%
 order_book = {-1: {}, 1: {}}
 current_orders = {-1: Counter(), 1: Counter()}
+active_prices = {-1: [], 1: []}  # Sorted lists for O(1) access
 message_counter = Counter()
 nlevels = 100
 
@@ -209,8 +229,11 @@ for message in messages.itertuples():
         price = int(message.price)
         shares = int(message.shares)
 
-        current_orders[buysell].update({price: shares})
-        current_orders[buysell], new_order = add_orders(current_orders[buysell], buysell, nlevels)
+        if price not in current_orders[buysell] or current_orders[buysell][price] == 0:
+            bisect.insort(active_prices[buysell], price)
+        current_orders[buysell][price] += shares
+
+        new_order = add_orders_fast(current_orders[buysell], buysell, nlevels, active_prices)
         order_book[buysell][message.timestamp] = new_order
 
     if message.type in ['E', 'C', 'X', 'D', 'U']:
@@ -224,11 +247,26 @@ for message in messages.itertuples():
                 shares = -int(message.shares)
 
         if price is not None:
-            current_orders[buysell].update({price: shares})
+            if price not in current_orders[buysell] or current_orders[buysell][price] == 0:
+                bisect.insort(active_prices[buysell], price)
+            current_orders[buysell][price] += shares
+            
             if current_orders[buysell][price] <= 0:
-                current_orders[buysell].pop(price)
-            current_orders[buysell], new_order = add_orders(current_orders[buysell], buysell, nlevels)
+                current_orders[buysell].pop(price, None)
+                # Binary search for removal is fast enough for small N, or we could use a custom remove
+                idx = bisect.bisect_left(active_prices[buysell], price)
+                if idx < len(active_prices[buysell]) and active_prices[buysell][idx] == price:
+                    active_prices[buysell].pop(idx)
+                    
+            new_order = add_orders_fast(current_orders[buysell], buysell, nlevels, active_prices)
             order_book[buysell][message.timestamp] = new_order
+
+# Save trailing data that didn't hit the 100k boundary
+if order_book[-1] or order_book[1]:
+    print(f'Saving final batch...')
+    save_orders(order_book, append=True)
+
+print(f'\nTotal rebuild time: {format_time(time() - SCRIPT_START)}')
 
 # %%
 message_counter = pd.Series(message_counter)
@@ -279,21 +317,39 @@ market_open='0930'
 market_close = '1600'
 
 # %%
+import matplotlib.pyplot as plt
+import seaborn as sns
+from matplotlib.ticker import FuncFormatter
 fig, ax = plt.subplots(figsize=(7,5))
-hist_kws = {'linewidth': 1, 'alpha': .5}
-sns.distplot(buy[buy.price.between(240, 250)].set_index('timestamp').between_time(market_open, market_close).price, 
-             ax=ax, label='Buy', kde=False, hist_kws=hist_kws)
-sns.distplot(sell[sell.price.between(240, 250)].set_index('timestamp').between_time(market_open, market_close).price, 
-             ax=ax, label='Sell', kde=False, hist_kws=hist_kws)
+# Filter data once for readability (same as before)
+buy_filtered = (buy[buy.price.between(240, 250)]
+                .set_index('timestamp')
+                .between_time(market_open, market_close))
+
+sell_filtered = (sell[sell.price.between(240, 250)]
+                 .set_index('timestamp')
+                 .between_time(market_open, market_close))
+
+# Modern replacement for the two distplot calls
+sns.histplot(data=buy_filtered, x='price', ax=ax, label='Buy',
+             alpha=0.5, linewidth=1, bins=50)   # same look as old distplot
+
+sns.histplot(data=sell_filtered, x='price', ax=ax, label='Sell',
+             alpha=0.5, linewidth=1, bins=50)
 
 ax.legend(fontsize=10)
 ax.set_title('Limit Order Price Distribution')
-ax.set_yticklabels([f'{int(y/1000):,}' for y in ax.get_yticks().tolist()])
-ax.set_xticklabels([f'${int(x):,}' for x in ax.get_xticks().tolist()])
+
+# Clean formatting (no more set_ticklabels warning!)
+ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${int(x):,}'))
+ax.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f'{int(y/1000):,}'))
+
 ax.set_xlabel('Price')
-ax.set_ylabel('Shares (\'000)')
+ax.set_ylabel("Shares ('000)")
+
 sns.despine()
-fig.tight_layout();
+fig.tight_layout()
+plt.show()
 
 # %% [markdown]
 # ### Order Book Depth
