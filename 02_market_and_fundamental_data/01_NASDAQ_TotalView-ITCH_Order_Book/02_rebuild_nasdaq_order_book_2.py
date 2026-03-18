@@ -335,6 +335,9 @@ if not book_exists:
         price, shares = None, None
 
         if message.type in ['A', 'F', 'U']:
+            # For U messages, only add the new order if the old order was found
+            if message.type == 'U' and np.isnan(message.shares_replaced):
+                continue
             price = int(message.price)
             shares = int(message.shares)
 

@@ -25,7 +25,7 @@ Buyers were appearing to pay more than sellers — an impossible condition in a 
 
 ## Root Cause Analysis
 
-Three bugs were identified in the `get_messages()` function and the order book reconstruction loop. All three compound to corrupt the `current_orders` data structure over the course of a trading day.
+Four bugs were identified in the `get_messages()` function and the order book reconstruction loop. All four compound to corrupt the `current_orders` data structure over the course of a trading day.
 
 ### Bug 1: Chained U (Replace) Messages Silently Fail
 
@@ -92,13 +92,47 @@ for m in messages[2: -3]:  # E, C, X, D
 
 ---
 
+### Bug 4: U (Replace) Messages Add Phantom Shares When Original Order Is Unknown
+
+**Location**: Main reconstruction loop — `U` message add block
+
+**What happened**: The reconstruction loop processes `U` messages in two parts:
+
+1. **Add block** (`if message.type in ['A', 'F', 'U']`): adds new shares at the new price
+2. **Remove block** (`if message.type in ['E', 'C', 'X', 'D', 'U']`): removes old shares at the old price
+
+When a `U` message references an original order not in the registry (e.g., placed on a **prior trading day**), `shares_replaced` is NaN. The remove block correctly skips the removal, but the **add block still executes unconditionally**, injecting phantom shares at the new price with no corresponding removal.
+
+```python
+# OLD (buggy)
+if message.type in ['A', 'F', 'U']:
+    price = int(message.price)      # ← always runs for U
+    shares = int(message.shares)    # ← adds phantom shares
+```
+
+**Diagnostic evidence**: Filtering sell orders at $1760.24 revealed:
+
+```
+Sell orders at ~$1760.24:
+  Count: 346,848
+  Unique shares values: [47, 80, 90, 99, 100, ..., 984, 1184, 1284, 1484, 1684, 1784, 1984]
+  Time range: 2019-10-30 09:29:57 to 2019-10-30 20:00:00
+```
+
+The monotonically increasing share values (incrementing by 100-200) confirm accumulation without proper removal. This single price level produced a persistent flat red line across the entire trading day chart.
+
+**Impact**: Phantom sell orders accumulate at specific price levels, creating persistent artifacts in the order book visualization.
+
+---
+
 ### How These Bugs Produce the Inversion
 
-The three bugs compound:
+The four bugs compound:
 
 1. **Phantom orders accumulate** from unfixed chained replacements (Bug 1)
 2. **Over-removal** from executions wipes too many shares at correct price levels (Bug 2)
 3. **Stale-price removals** subtract shares from wrong levels (Bug 3)
+4. **Orphaned adds** from unknown prior-day replacements inject phantom shares (Bug 4)
 
 The cumulative effect corrupts the `current_orders` dictionary. When `prep_order_book_minute_data` selects:
 
@@ -163,6 +197,21 @@ else:  # X, D
         shares = -int(message.shares)
 ```
 
+### Fix 4: Guard U Message Adds Against Unknown Originals
+
+Skip the entire `U` message when the original order is not found in the registry:
+
+```python
+# NEW (fixed)
+if message.type in ['A', 'F', 'U']:
+    if message.type == 'U' and np.isnan(message.shares_replaced):
+        continue  # ← skip both add AND remove
+    price = int(message.price)
+    shares = int(message.shares)
+```
+
+This ensures that if we can't remove the old order, we don't add the new one either — preventing phantom share accumulation.
+
 ---
 
 ## Files Modified
@@ -189,6 +238,7 @@ else:  # X, D
    - Sell (ask) prices should be **at or above** the trade price
    - `best_bid < best_ask` at every timestamp
 4. **Check the full-day scatter plot**: Blue (buy) dots should appear **below** the black price line, and red (sell) dots should appear **above** it.
+5. **Verify no persistent flat lines**: Check that no single price level (e.g., $1760.24) creates a horizontal line spanning the entire trading day.
 
 ---
 

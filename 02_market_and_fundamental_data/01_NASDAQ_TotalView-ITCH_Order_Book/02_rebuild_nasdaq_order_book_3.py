@@ -337,6 +337,11 @@ if not book_exists:
         price, shares = None, None
 
         if message.type in ['A', 'F', 'U']:
+            # For U messages, only add the new order if the old order was found
+            # (i.e., shares_replaced is not NaN). Otherwise we'd add phantom shares
+            # without a corresponding removal of the old order.
+            if message.type == 'U' and np.isnan(message.shares_replaced):
+                continue
             price = int(message.price)
             shares = int(message.shares)
 
@@ -418,7 +423,7 @@ sell.price = sell.price.mul(1e-4)
 # %%
 percentiles = [.01, .02, .1, .25, .75, .9, .98, .99]
 pd.concat([buy.price.describe(percentiles=percentiles).to_frame('buy'),
-           sell.price.describe(percentiles=percentiles).to_frame('sell')], axis=1)
+           sell.price.describe(percentiles=percentiles).to_frame('sell')], axis=1).apply(lambda x: x.map('{:,.2f}'.format))
 
 # %%
 buy = buy[buy.price > buy.price.quantile(.01)]
@@ -462,6 +467,15 @@ sns.histplot(data=sell_filtered, x='price', ax=ax, label='Sell',
 
 ax.legend(fontsize=10)
 ax.set_title(f'{stock} Limit Order Price Distribution')
+
+# Diagnostic: check the $1760.24 sell order
+suspect_price = 1760.24
+sell_at_suspect = sell[abs(sell.price - suspect_price) < 0.01]
+print(f"Sell orders at ~${suspect_price}:")
+print(f"  Count: {len(sell_at_suspect)}")
+print(f"  Unique shares values: {sell_at_suspect.shares.unique()}")
+print(f"  Time range: {sell_at_suspect.timestamp.min()} to {sell_at_suspect.timestamp.max()}")
+
 
 # Clean formatting (no more set_ticklabels warning!)
 ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'${int(x):,}'))
