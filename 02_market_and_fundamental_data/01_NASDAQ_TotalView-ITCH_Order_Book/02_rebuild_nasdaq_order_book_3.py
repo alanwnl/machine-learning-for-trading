@@ -626,7 +626,8 @@ trades_per_min.info()
 plot_order_book_profile(buy_per_min, sell_per_min, trades_per_min, target_timestamp=get_timestamp('12:38')) 
 
 # %% [markdown]
-#   The following plots the evolution of limit orders and prices throughout the trading day: the dark line tracks the prices for executed trades during market hours, whereas the red and blue dots indicate individual limit orders on a per-minute basis (see notebook for details)
+#   ### Order Book Profile and Volume
+#   The following plots the evolution of limit orders, prices, and volume throughout the trading day. limit orders are indicated by red and blue dots, executed trade prices by the dark line, and volume by the light blue bars on the secondary axis.
 
 # %%
 import plotly.graph_objects as go
@@ -636,6 +637,15 @@ sell_dt = pd.to_datetime(sell_per_min['timestamp'], unit='ns').dt.tz_localize('U
 trades_dt = pd.to_datetime(trades_per_min.index, unit='ns').tz_localize('UTC').tz_convert('America/New_York')
 
 fig = go.Figure()
+
+fig.add_trace(go.Bar(
+    x=trades_dt,
+    y=trades_per_min['shares'],
+    name='Volume',
+    marker_color='lightslategray',
+    opacity=0.4,
+    yaxis='y2'
+))
 
 fig.add_trace(go.Scatter(
     x=buy_dt,
@@ -671,62 +681,24 @@ fig.add_trace(go.Scatter(
     name='Executed Trades'
 ))
 
-title = f'{stock} | {date} | Buy & Sell Limit Order Book | Depth = {depth}'
+title = f'{stock} | {date} | Buy & Sell Limit Order Book & Volume | Depth = {depth}'
 
 fig.update_layout(
     title=title,
     xaxis_title='',
-    yaxis_title='Price',
     template='plotly_white',
     height=600,
     hovermode='x unified',
-    xaxis=dict(
-        tickformat='%H:%M'
-    )
-)
-
-fig.show()
-
-# %% [markdown]
-#   ### Trades Per Minute over Time
-
-# %%
-import plotly.graph_objects as go
-
-trades_dt = pd.to_datetime(trades_per_min.index, unit='ns').tz_localize('UTC').tz_convert('America/New_York')
-
-fig = go.Figure()
-fig.add_trace(go.Bar(
-    x=trades_dt,
-    y=trades_per_min['shares'],
-    name='Volume',
-    marker_color='lightblue',
-    opacity=0.6
-))
-
-fig.add_trace(go.Scatter(
-    x=trades_dt,
-    y=trades_per_min['price'],
-    mode='lines',
-    name='Price',
-    line=dict(color='black', width=2),
-    yaxis='y2'
-))
-
-fig.update_layout(
-    title=f'{stock} | {date} | Trades per Minute',
-    template='plotly_white',
-    hovermode='x unified',
     yaxis=dict(
-        title='Volume (Shares)',
+        title='Price',
         side='left',
-        showgrid=False
+        showgrid=True
     ),
     yaxis2=dict(
-        title='Price',
+        title='Volume (Shares)',
         side='right',
         overlaying='y',
-        showgrid=True
+        showgrid=False
     ),
     xaxis=dict(
         tickformat='%H:%M'

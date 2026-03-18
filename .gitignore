@@ -3,7 +3,6 @@
 *.hdf5
 *.pkl
 *.pickle
-*.csv
 *.xls
 *.xlsx
 *.zip
@@ -23,7 +22,6 @@
 *.a
 *.lib
 *.nc
-*.ipynb
 *.pyc
 
 # Data files
