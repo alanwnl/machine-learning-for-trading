@@ -68,7 +68,12 @@ order_dict = {-1: 'sell', 1: 'buy'}
 
 # %%
 def get_messages(date, stock=stock):
-    """Collect trading messages for given stock"""
+    """Collect trading messages for given stock.
+
+    Builds a *live* order registry so that chained U (Replace) messages
+    and subsequent E/C/X/D messages always reference the correct
+    buy_sell_indicator, current shares, and current price.
+    """
     with pd.HDFStore(itch_store) as store:
         # Fixed-format HDF5: load full table, filter in memory (fast with 128GB RAM)
         r_data = store['R']
@@ -81,20 +86,68 @@ def get_messages(date, stock=stock):
             df = store[m]
             data[m] = df[df.stock_locate == stock_locate].drop('stock_locate', axis=1).assign(type=m)
 
+    # -----------------------------------------------------------------
+    # Build a LIVE order registry: order_ref -> (buy_sell_indicator, shares, price)
+    # This handles chained U messages correctly.
+    # -----------------------------------------------------------------
     order_cols = ['order_reference_number', 'buy_sell_indicator', 'shares', 'price']
-    orders = pd.concat([data['A'], data['F']], sort=False, ignore_index=True).loc[:, order_cols]
+    initial_orders = pd.concat([data['A'], data['F']], sort=False, ignore_index=True).loc[:, order_cols]
 
-    for m in messages[2: -3]:
-        data[m] = data[m].merge(orders, how='left')
+    # Start with A/F orders
+    order_registry = {}
+    for row in initial_orders.itertuples(index=False):
+        order_registry[row.order_reference_number] = (
+            row.buy_sell_indicator, row.shares, row.price
+        )
 
-    data['U'] = data['U'].merge(orders, how='left',
-                                right_on='order_reference_number',
-                                left_on='original_order_reference_number',
-                                suffixes=['', '_replaced'])
+    # Process U messages in timestamp order to handle chained replacements
+    u_sorted = data['U'].sort_values('timestamp')
+    for row in u_sorted.itertuples(index=False):
+        orig_ref = row.original_order_reference_number
+        new_ref = row.new_order_reference_number
+        if orig_ref in order_registry:
+            old_buysell, old_shares, old_price = order_registry[orig_ref]
+            # Register the NEW order with the new price/shares but same side
+            order_registry[new_ref] = (old_buysell, row.shares, row.price)
+            # Keep old entry so we can look up the replaced values
+        # If orig_ref not found, this is an order from a prior day; skip
 
-    data['Q'].rename(columns={'cross_price': 'price'}, inplace=True)
+    # -----------------------------------------------------------------
+    # Now enrich each message type using the registry
+    # -----------------------------------------------------------------
+    def lookup_order(ref):
+        """Return (buy_sell_indicator, shares, price) or (NaN, NaN, NaN)."""
+        if ref in order_registry:
+            return order_registry[ref]
+        return (np.nan, np.nan, np.nan)
+
+    # E, C, X, D: merge with registry on order_reference_number
+    for m in ['E', 'C', 'X', 'D']:
+        refs = data[m]['order_reference_number']
+        looked_up = refs.apply(lookup_order)
+        data[m] = data[m].assign(
+            buy_sell_indicator=[x[0] for x in looked_up],
+            shares=[x[1] for x in looked_up],
+            price=[x[2] for x in looked_up]
+        )
+
+    # U messages: need both the NEW order info (already in the message)
+    # and the REPLACED (old) order info from the registry
+    u_data = data['U'].copy()
+    old_refs = u_data['original_order_reference_number']
+    looked_up_old = old_refs.apply(lookup_order)
+    u_data = u_data.assign(
+        buy_sell_indicator=[x[0] for x in looked_up_old],
+        shares_replaced=[x[1] for x in looked_up_old],
+        price_replaced=[x[2] for x in looked_up_old]
+    )
+    data['U'] = u_data
+
+    # X: use cancelled_shares as shares
     data['X']['shares'] = data['X']['cancelled_shares']
     data['X'] = data['X'].dropna(subset=['price'])
+
+    data['Q'].rename(columns={'cross_price': 'price'}, inplace=True)
 
     data = pd.concat([data[m] for m in messages], ignore_index=True, sort=False)
     data['date'] = pd.to_datetime(date, format='%m%d%Y')
@@ -104,7 +157,7 @@ def get_messages(date, stock=stock):
     drop_cols = ['tracking_number', 'order_reference_number', 'original_order_reference_number',
                  'cross_type', 'new_order_reference_number', 'attribution', 'match_number',
                  'printable', 'date', 'cancelled_shares']
-    return data.drop(drop_cols, axis=1).sort_values('timestamp').reset_index(drop=True)
+    return data.drop(drop_cols, axis=1, errors='ignore').sort_values('timestamp').reset_index(drop=True)
 
 # %%
 import os
@@ -297,8 +350,14 @@ if not book_exists:
                 if not np.isnan(message.shares_replaced):
                     price = int(message.price_replaced)
                     shares = -int(message.shares_replaced)
-            else:
+            elif message.type in ['E', 'C']:
+                # Bug fix: use executed_shares, not the total order shares
                 if not np.isnan(message.price):
+                    price = int(message.price)
+                    shares = -int(message.executed_shares)
+            else:
+                # X uses cancelled_shares (set as 'shares' earlier), D uses full order shares
+                if not np.isnan(message.price) and not np.isnan(message.shares):
                     price = int(message.price)
                     shares = -int(message.shares)
 
