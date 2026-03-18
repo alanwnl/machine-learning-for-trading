@@ -1,13 +1,13 @@
 # %% [markdown]
-# # Working with Order Book Data: NASDAQ ITCH
+#   # Working with Order Book Data: NASDAQ ITCH
 
 # %% [markdown]
-# The primary source of market data is the order book, which is continuously updated in real-time throughout the day to reflect all trading activity. Exchanges typically offer this data as a real-time service and may provide some historical data for free.
+#   The primary source of market data is the order book, which is continuously updated in real-time throughout the day to reflect all trading activity. Exchanges typically offer this data as a real-time service and may provide some historical data for free.
 # 
-# The trading activity is reflected in numerous messages about trade orders sent by market participants. These messages typically conform to the electronic Financial Information eXchange (FIX) communications protocol for real-time exchange of securities transactions and market data or a native exchange protocol. 
+#   The trading activity is reflected in numerous messages about trade orders sent by market participants. These messages typically conform to the electronic Financial Information eXchange (FIX) communications protocol for real-time exchange of securities transactions and market data or a native exchange protocol.
 
 # %% [markdown]
-# ## Imports
+#   ## Imports
 
 # %%
 from pathlib import Path
@@ -35,36 +35,36 @@ def format_time(t):
     return f'{h:0>2.0f}:{m:0>2.0f}:{s:0>2.0f}'
 
 # %% [markdown]
-# ### Set Data paths
+#   ### Set Data paths
 
 # %% [markdown]
-# We will store the download in a `data` subdirectory and convert the result to `hdf` format (discussed in the last section of chapter 2).
+#   We will store the download in a `data` subdirectory and convert the result to `hdf` format (discussed in the last section of chapter 2).
 
 # %%
 data_path = Path('data') # set to e.g. external harddrive
 SOURCE_FILE = '10302019.NASDAQ_ITCH50.gz'
 itch_store = str(data_path / (Path(SOURCE_FILE).stem + '.h5'))
-order_book_store = data_path / (Path(SOURCE_FILE).stem + '_order_book.h5')
 date = '10302019'
+stock = 'AAPL'
+order_book_store = data_path / f"{Path(SOURCE_FILE).stem}_{stock}_order_book.h5"
 
 # %% [markdown]
-# ## Build Order Book
+#   ## Build Order Book
 
 # %%
-stock = 'AAPL'
 order_dict = {-1: 'sell', 1: 'buy'}
 
 # %% [markdown]
-# The parsed messages allow us to rebuild the order flow for the given day. The 'R' message type contains a listing of all stocks traded during a given day, including information about initial public offerings (IPOs) and trading restrictions.
+#   The parsed messages allow us to rebuild the order flow for the given day. The 'R' message type contains a listing of all stocks traded during a given day, including information about initial public offerings (IPOs) and trading restrictions.
 
 # %% [markdown]
-# Throughout the day, new orders are added, and orders that are executed and canceled are removed from the order book. The proper accounting for messages that reference orders placed on a prior date would require tracking the order book over multiple days, but we are ignoring this aspect here.
+#   Throughout the day, new orders are added, and orders that are executed and canceled are removed from the order book. The proper accounting for messages that reference orders placed on a prior date would require tracking the order book over multiple days, but we are ignoring this aspect here.
 
 # %% [markdown]
-# ### Get all messages for given stock
+#   ### Get all messages for given stock
 
 # %% [markdown]
-# The `get_messages()` function illustrates how to collect the orders for a single stock that affects trading (refer to the ITCH specification for details about each message):
+#   The `get_messages()` function illustrates how to collect the orders for a single stock that affects trading (refer to the ITCH specification for details about each message):
 
 # %%
 def get_messages(date, stock=stock):
@@ -106,6 +106,9 @@ def get_messages(date, stock=stock):
                  'printable', 'date', 'cancelled_shares']
     return data.drop(drop_cols, axis=1).sort_values('timestamp').reset_index(drop=True)
 
+# %%
+import os
+from pathlib import Path
 
 book_exists = False
 store_path = Path(order_book_store)
@@ -115,27 +118,33 @@ if store_path.exists():
             book_exists = True
 
 if book_exists:
-    print(f"Order book for {stock} already exists in {order_book_store}. Skipping rebuild.")
-else:
+    print(f"Order book for {stock} already exists in {order_book_store}. cells will skip rebuild.")
+
 # %%
+if not book_exists:
+    pass
     print("Loading and filtering messages...")
     SCRIPT_START = time()
     messages = get_messages(date=date)
     messages.info(show_counts=True)
-    
+
 # %%
+if not book_exists:
+    pass
     with pd.HDFStore(order_book_store) as store:
         key = f'{stock}/messages'
         store.put(key, messages)
         print(store.info())
-    
+
 # %% [markdown]
-    # ### Combine Trading Records
-    
+#   ### Combine Trading Records
+
 # %% [markdown]
-    # Reconstructing successful trades, that is, orders that are executed as opposed to those that were canceled from trade-related message types, C, E, P, and Q, is relatively straightforward:
-    
+#   Reconstructing successful trades, that is, orders that are executed as opposed to those that were canceled from trade-related message types, C, E, P, and Q, is relatively straightforward:
+
 # %%
+if not book_exists:
+    pass
     def get_trades(m):
         """Combine C, E, P and Q messages into trading records"""
         trade_dict = {'executed_shares': 'shares', 'execution_price': 'price'}
@@ -146,35 +155,41 @@ else:
                             m.loc[m.type == 'Q', ['timestamp', 'price', 'shares']].assign(cross=1),
                             ], sort=False).dropna(subset=['price']).fillna(0)
         return trades.set_index('timestamp').sort_index().astype(int)
-    
+
 # %%
+if not book_exists:
+    pass
     trades = get_trades(messages)
     print(trades.info())
-    
+
 # %%
+if not book_exists:
+    pass
     with pd.HDFStore(order_book_store) as store:
         store.put(f'{stock}/trades', trades)
-    
+
 # %% [markdown]
-    # ### Create Orders
-    
+#   ### Create Orders
+
 # %% [markdown]
-    # The order book keeps track of limit orders, and the various price levels for buy and sell orders constitute the depth of the order book. To reconstruct the order book for a given level of depth requires the following steps:
-    # 
-    
+#   The order book keeps track of limit orders, and the various price levels for buy and sell orders constitute the depth of the order book. To reconstruct the order book for a given level of depth requires the following steps:
+# 
+
 # %% [markdown]
-    # The `add_orders()` function accumulates sell orders in ascending, and buy orders in descending order for a given timestamp up to the desired level of depth:
-    
+#   The `add_orders()` function accumulates sell orders in ascending, and buy orders in descending order for a given timestamp up to the desired level of depth:
+
 # %%
+if not book_exists:
+    pass
     import bisect
-    
+
     def add_orders_fast(orders, buysell, nlevels, active_prices):
         """Add orders up to desired depth given by nlevels using pre-sorted price lists.
             sell (buysell=-1) in ascending, buy (buysell=1) in descending order
         """
         new_order = []
         prices = active_prices[buysell]
-        
+    
         if buysell == 1:
             # Buy: highest bids first (end of sorted array)
             start_idx = max(0, len(prices) - nlevels)
@@ -185,22 +200,24 @@ else:
             end_idx = min(len(prices), nlevels)
             for p in prices[:end_idx]:
                 new_order.append((p, orders[p]))
-                
+            
         return new_order
-    
+
 # %%
+if not book_exists:
+    pass
     def save_orders(orders, append=False):
         for buysell, book in orders.items():
             if not book:
                 continue
-                
+            
             timestamps, prices, shares = [], [], []
             for t, data in book.items():
                 for p, s in data:
                     timestamps.append(t)
                     prices.append(p)
                     shares.append(s)
-                    
+                
             df = pd.DataFrame({'price': prices, 'shares': shares, 'timestamp': timestamps})
             key = f'{stock}/{order_dict[buysell]}'
             df.loc[:, ['price', 'shares']] = df.loc[:, ['price', 'shares']].astype(int)
@@ -209,43 +226,46 @@ else:
                     store.append(key, df.set_index('timestamp'), format='t')
                 else:
                     store.put(key, df.set_index('timestamp'))
-    
+
 # %% [markdown]
-    # We iterate over all ITCH messages and process orders and their replacements as required by the specification (this can take a while):
-    
+#   We iterate over all ITCH messages and process orders and their replacements as required by the specification (this can take a while):
+
 # %%
+if not book_exists:
+    pass
     order_book = {-1: {}, 1: {}}
     current_orders = {-1: Counter(), 1: Counter()}
     active_prices = {-1: [], 1: []}  # Sorted lists for O(1) access
     message_counter = Counter()
     nlevels = 100
-    
+
     import os
     import shutil
-    
+
     # Clean up existing order book data for this stock to prevent duplicate appending
     # We copy all other data to a temporary store, delete the original, and replace it
-    # because 'store.remove()' does not reclaim file space in HDF5 and causes file size explosion
+    # because store.remove() does not reclaim file space in HDF5 and causes file size explosion
     store_path = Path(order_book_store)
     if store_path.exists():
-        temp_store_path = store_path.parent / (store_path.stem + '_temp.h5')
+        temp_store_path = store_path.parent / (store_path.stem + "_temp.h5")
+    
+        with pd.HDFStore(store_path, mode="r") as store:
+            keys_to_keep = [k for k in store.keys() if k not in [f"/{stock}/{order_dict[-1]}", f"/{stock}/{order_dict[1]}"]]
         
-        with pd.HDFStore(store_path, mode='r') as store:
-            keys_to_keep = [k for k in store.keys() if k not in [f'/{stock}/{order_dict[-1]}', f'/{stock}/{order_dict[1]}']]
-            
         if len(keys_to_keep) > 0:
-            with pd.HDFStore(store_path, mode='r') as store, \
-                 pd.HDFStore(temp_store_path, mode='w', complib='blosc', complevel=9) as new_store:
+            with pd.HDFStore(store_path, mode="r") as store, \
+                 pd.HDFStore(temp_store_path, mode="w", complib="blosc", complevel=9) as new_store:
                 for k in keys_to_keep:
                     storer = store.get_storer(k)
-                    format_str = 'table' if storer.format_type == 'table' else 'fixed'
+                    format_str = "table" if storer.format_type == "table" else "fixed"
                     new_store.put(k, store.get(k), format=format_str)
-            
+        
             os.replace(temp_store_path, store_path)
         else:
             # If no keys left, just delete the file entirely
             store_path.unlink()
-    
+
+
     start = time()
     for message in messages.itertuples():
         i = message[0]
@@ -257,21 +277,21 @@ else:
         if np.isnan(message.buy_sell_indicator):
             continue
         message_counter.update(message.type)
-    
+
         buysell = message.buy_sell_indicator
         price, shares = None, None
-    
+
         if message.type in ['A', 'F', 'U']:
             price = int(message.price)
             shares = int(message.shares)
-    
+
             if price not in current_orders[buysell] or current_orders[buysell][price] == 0:
                 bisect.insort(active_prices[buysell], price)
             current_orders[buysell][price] += shares
-    
+
             new_order = add_orders_fast(current_orders[buysell], buysell, nlevels, active_prices)
             order_book[buysell][message.timestamp] = new_order
-    
+
         if message.type in ['E', 'C', 'X', 'D', 'U']:
             if message.type == 'U':
                 if not np.isnan(message.shares_replaced):
@@ -281,39 +301,43 @@ else:
                 if not np.isnan(message.price):
                     price = int(message.price)
                     shares = -int(message.shares)
-    
+
             if price is not None:
                 if price not in current_orders[buysell] or current_orders[buysell][price] == 0:
                     bisect.insort(active_prices[buysell], price)
                 current_orders[buysell][price] += shares
-                
+            
                 if current_orders[buysell][price] <= 0:
                     current_orders[buysell].pop(price, None)
                     # Binary search for removal is fast enough for small N, or we could use a custom remove
                     idx = bisect.bisect_left(active_prices[buysell], price)
                     if idx < len(active_prices[buysell]) and active_prices[buysell][idx] == price:
                         active_prices[buysell].pop(idx)
-                        
+                    
                 new_order = add_orders_fast(current_orders[buysell], buysell, nlevels, active_prices)
                 order_book[buysell][message.timestamp] = new_order
-    
+
     # Save trailing data that didn't hit the 100k boundary
     if order_book[-1] or order_book[1]:
         print(f'Saving final batch...')
         save_orders(order_book, append=True)
-    
+
     print(f'\nTotal rebuild time: {format_time(time() - SCRIPT_START)}')
-    
+
 # %%
+if not book_exists:
+    pass
     message_counter = pd.Series(message_counter)
     print(message_counter)
-    
+
 # %%
+if not book_exists:
+    pass
     with pd.HDFStore(order_book_store) as store:
         print(store.info())
-    
+
 # %% [markdown]
-# ## Order Book Depth
+#   ## Order Book Depth
 
 # %%
 with pd.HDFStore(order_book_store) as store:
@@ -321,14 +345,14 @@ with pd.HDFStore(order_book_store) as store:
     sell = store[f'{stock}/sell'].reset_index().drop_duplicates()
 
 # %% [markdown]
-# ### Price to Decimals
+#   ### Price to Decimals
 
 # %%
 buy.price = buy.price.mul(1e-4)
 sell.price = sell.price.mul(1e-4)
 
 # %% [markdown]
-# ### Remove outliers
+#   ### Remove outliers
 
 # %%
 percentiles = [.01, .02, .1, .25, .75, .9, .98, .99]
@@ -340,13 +364,13 @@ buy = buy[buy.price > buy.price.quantile(.01)]
 sell = sell[sell.price < sell.price.quantile(.99)]
 
 # %% [markdown]
-# ### Buy-Sell Order Distribution
+#   ### Buy-Sell Order Distribution
 
 # %% [markdown]
-# The number of orders at different price levels, highlighted in the following screenshot using different intensities for buy and sell orders, visualizes the depth of liquidity at any given point in time.
+#   The number of orders at different price levels, highlighted in the following screenshot using different intensities for buy and sell orders, visualizes the depth of liquidity at any given point in time.
 
 # %% [markdown]
-# The distribution of limit order prices was weighted toward buy orders at higher prices.
+#   The distribution of limit order prices was weighted toward buy orders at higher prices.
 
 # %%
 market_open='0930'
@@ -357,13 +381,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib.ticker import FuncFormatter
 fig, ax = plt.subplots(figsize=(7,5))
-# Filter data once for readability (same as before)
-buy_filtered = (buy[buy.price.between(240, 250)]
-                .set_index('timestamp')
+# Use all data within market hours (outliers were removed in previous steps)
+buy_filtered = (buy.set_index('timestamp')
                 .between_time(market_open, market_close))
 
-sell_filtered = (sell[sell.price.between(240, 250)]
-                 .set_index('timestamp')
+sell_filtered = (sell.set_index('timestamp')
                  .between_time(market_open, market_close))
 
 # Modern replacement for the two distplot calls
@@ -388,7 +410,7 @@ fig.tight_layout()
 plt.show()
 
 # %% [markdown]
-# ### Order Book Depth
+#   ### Order Book Depth
 
 # %%
 utc_offset = timedelta(hours=4)
@@ -409,6 +431,7 @@ buy_per_min = (buy
 buy_per_min.timestamp = buy_per_min.timestamp.add(utc_offset).astype(int)
 buy_per_min.info()
 
+buy_per_min
 # %%
 sell_per_min = (sell
                 .groupby([pd.Grouper(key='timestamp', freq='Min'), 'price'])
@@ -425,6 +448,8 @@ sell_per_min = (sell
 sell_per_min.timestamp = sell_per_min.timestamp.add(utc_offset).astype(int)
 sell_per_min.info()
 
+
+
 # %%
 with pd.HDFStore(order_book_store) as store:
     trades = store[f'{stock}/trades']
@@ -438,7 +463,7 @@ trades_per_min.index = trades_per_min.index.to_series().add(utc_offset).astype(i
 trades_per_min.info()
 
 # %% [markdown]
-# The following plots the evolution of limit orders and prices throughout the trading day: the dark line tracks the prices for executed trades during market hours, whereas the red and blue dots indicate individual limit orders on a per-minute basis (see notebook for details)
+#   The following plots the evolution of limit orders and prices throughout the trading day: the dark line tracks the prices for executed trades during market hours, whereas the red and blue dots indicate individual limit orders on a per-minute basis (see notebook for details)
 
 # %%
 sns.set_style('white')
@@ -460,7 +485,7 @@ sell_per_min.plot.scatter(x='timestamp',
                           colorbar=False, 
                           alpha=.25)
 
-title = f'AAPL | {date} | Buy & Sell Limit Order Book | Depth = {depth}'
+title = f'{stock} | {date} | Buy & Sell Limit Order Book | Depth = {depth}'
 trades_per_min.price.plot(figsize=(14, 8), 
                           c='k', 
                           ax=ax, 
