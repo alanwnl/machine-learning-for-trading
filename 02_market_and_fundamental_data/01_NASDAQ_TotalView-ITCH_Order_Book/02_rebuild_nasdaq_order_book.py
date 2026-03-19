@@ -82,7 +82,16 @@ def get_messages(date, stock=stock):
         stock_locate = r_data[r_data.stock == stock].stock_locate.iloc[0]
 
         data = {}
-        # trading message types
+        # trading message types:
+        # A: Add Order                  (has buy_sell_indicator, shares)
+        # F: Add Order with MPID        (has buy_sell_indicator, shares)
+        # E: Order Executed             (uses executed_shares)
+        # C: Executed with Price        (uses executed_shares, check printable)
+        # X: Order Cancel               (uses cancelled_shares)
+        # D: Order Delete               (uses full order shares)
+        # U: Replace Order              (has new shares, requires old order lookup)
+        # P: Trade Non-Cross            (has buy_sell_indicator, shares)
+        # Q: Cross Trade                (has shares)
         messages = ['A', 'F', 'E', 'C', 'X', 'D', 'U', 'P', 'Q']
         for m in messages:
             df = store[m]
@@ -109,7 +118,8 @@ def get_messages(date, stock=stock):
         new_ref = row.new_order_reference_number
         if orig_ref in order_registry:
             old_buysell, old_shares, old_price = order_registry[orig_ref]
-            # Register the NEW order with the new price/shares but same side
+            # U messages specify new price/shares, but do not specify order side (Buy/Sell).
+            # We inherit the side from the original order, as replace requests cannot change sides.
             order_registry[new_ref] = (old_buysell, row.shares, row.price)
             # Keep old entry so we can look up the replaced values
         # If orig_ref not found, this is an order from a prior day; skip
@@ -124,6 +134,10 @@ def get_messages(date, stock=stock):
         return (np.nan, np.nan, np.nan)
 
     # E, C, X, D: merge with registry on order_reference_number
+    # E: Order Executed             (uses executed_shares)
+    # C: Executed with Price        (uses executed_shares, check printable)
+    # X: Order Cancel               (uses cancelled_shares)
+    # D: Order Delete               (uses full order shares)
     for m in ['E', 'C', 'X', 'D']:
         refs = data[m]['order_reference_number']
         looked_up = refs.apply(lookup_order)

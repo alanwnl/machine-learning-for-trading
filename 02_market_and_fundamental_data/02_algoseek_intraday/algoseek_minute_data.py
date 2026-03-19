@@ -240,31 +240,58 @@ columns = {'volumeweightprice': 'price',
 nasdaq_path = Path('../../data/nasdaq100')
 
 # %%
+import concurrent.futures
+
+def process_file(f):
+    try:
+        df = (pd.read_csv(f, parse_dates=[['Date', 'TimeBarStart']],
+                          usecols=lambda x: str(x).lower() not in set(tcols + drop_cols))
+              .rename(columns=str.lower)
+              .rename(columns=columns)
+              .set_index('date_timebarstart')
+              .sort_index()
+              .between_time('9:30', '16:00')
+              .set_index('ticker', append=True)
+              .swaplevel()
+              .rename(columns=lambda x: x.replace('tradeat', 'at')))
+        return df
+    except Exception as e:
+        print(f"Error processing {f}: {e}")
+        return None
+
 def extract_and_combine_data():
+    h5_path = nasdaq_path / 'algoseek.h5'
+    if h5_path.exists():
+        print(f"Data already extracted and combined at {h5_path}. Skipping...")
+        return
+
     path = nasdaq_path / '1min_taq'
     if not path.exists():
         path.mkdir(parents=True)
 
+    files = list(path.glob('*/**/*.csv.gz'))
+    if not files:
+        print(f"No data files found in {path}")
+        return
+
+    print(f"Extracting and combining data from {len(files)} files...")
     data = []
-    # ~80K files to process
-    for f in tqdm(list(path.glob('*/**/*.csv.gz'))):
-        data.append(pd.read_csv(f, parse_dates=[['Date', 'TimeBarStart']])
-                    .rename(columns=str.lower)
-                    .drop(tcols + drop_cols, axis=1)
-                    .rename(columns=columns)
-                    .set_index('date_timebarstart')
-                    .sort_index()
-                    .between_time('9:30', '16:00')
-                    .set_index('ticker', append=True)
-                    .swaplevel()
-                    .rename(columns=lambda x: x.replace('tradeat', 'at')))
+    
+    # Process files concurrently using ThreadPoolExecutor for a significant speedup
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = {executor.submit(process_file, f): f for f in files}
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(files)):
+            res = future.result()
+            if res is not None and not res.empty:
+                data.append(res)
 
     if not data:
-        print(f"No data files found in {path}")
+        print(f"No valid data returned from files in {path}")
         return
 
     data = pd.concat(data).apply(pd.to_numeric, downcast='integer')
     data.index.rename(['ticker', 'date_time'], inplace=True)
+    data = data.sort_index()
     print(data.info(show_counts=True))
     data.to_hdf(nasdaq_path / 'algoseek.h5', 'min_taq')
 
