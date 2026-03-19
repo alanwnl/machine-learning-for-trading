@@ -154,11 +154,15 @@ def get_messages(date, stock=stock):
     data = pd.concat([data[m] for m in messages], ignore_index=True, sort=False)
     data['date'] = pd.to_datetime(date, format='%m%d%Y')
     data.timestamp = data['date'].add(data.timestamp)
-    data = data[data.printable != 0]
+    # NOTE: Do NOT filter printable != 0 here.
+    # C messages with printable=0 (non-printable cross executions) still
+    # remove shares from the order book. Filtering them here causes phantom
+    # orders to accumulate at stale price levels (Bug 5).
+    # The printable filter is applied only in get_trades() for trade records.
 
     drop_cols = ['tracking_number', 'order_reference_number', 'original_order_reference_number',
                  'cross_type', 'new_order_reference_number', 'attribution', 'match_number',
-                 'printable', 'date', 'cancelled_shares']
+                 'date', 'cancelled_shares']
     return data.drop(drop_cols, axis=1, errors='ignore').sort_values('timestamp').reset_index(drop=True)
 
 # %%
@@ -205,7 +209,7 @@ if not book_exists:
         trade_dict = {'executed_shares': 'shares', 'execution_price': 'price'}
         cols = ['timestamp', 'executed_shares']
         trades = pd.concat([m.loc[m.type == 'E', cols + ['price']].rename(columns=trade_dict),
-                            m.loc[m.type == 'C', cols + ['execution_price']].rename(columns=trade_dict),
+                            m.loc[(m.type == 'C') & (m.printable != 0), cols + ['execution_price']].rename(columns=trade_dict),
                             m.loc[m.type == 'P', ['timestamp', 'price', 'shares']],
                             m.loc[m.type == 'Q', ['timestamp', 'price', 'shares']].assign(cross=1),
                             ], sort=False).dropna(subset=['price']).fillna(0)

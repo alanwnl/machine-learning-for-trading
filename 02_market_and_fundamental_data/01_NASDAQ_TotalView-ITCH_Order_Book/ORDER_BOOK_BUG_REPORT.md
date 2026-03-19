@@ -214,6 +214,42 @@ This ensures that if we can't remove the old order, we don't add the new one eit
 
 ---
 
+### Bug 5: Non-Printable C (Executed with Price) Messages Filtered Before Order Book Processing
+
+**Location**: `get_messages()` — post-concat filter
+
+**What happened**: After concatenating all message types, the code applied a global filter:
+
+```python
+# OLD (buggy)
+data = data[data.printable != 0]
+```
+
+The ITCH `C` (Executed with Price) message has a `printable` field that indicates whether the execution should be printed to the tape. **Non-printable cross executions** (`printable=0`) are real executions that remove shares from the order book — the `printable` flag only controls tape reporting, not whether the trade occurred.
+
+By filtering these messages out globally, the corresponding share removals never happen.
+
+**Diagnostic evidence**: 9 sell orders at $1760.23 totaling 1,984 shares were placed between 09:30:00.270–09:30:00.734. All 9 had matching `C` messages at 09:30:00.782 with `printable=0`. These C messages were silently dropped, leaving 1,984 phantom shares persisting the entire trading day. Same pattern for 146 shares at $1760.24.
+
+**Impact**: Phantom sell (or buy) orders accumulate at specific price levels from non-printable cross executions, creating persistent artifacts below (or above) the market price.
+
+### Fix 5: Move Printable Filter to Trade Records Only
+
+Removed the global `data = data[data.printable != 0]` filter from `get_messages()`. Instead, the printable filter is applied only in `get_trades()` for C messages:
+
+```python
+# NEW (fixed) — in get_messages():
+# Removed: data = data[data.printable != 0]
+# Kept 'printable' column in returned data
+
+# NEW (fixed) — in get_trades():
+m.loc[(m.type == 'C') & (m.printable != 0), cols + ['execution_price']]
+```
+
+This ensures non-printable cross executions properly remove shares from the order book while keeping them out of the trade price history.
+
+---
+
 ## Files Modified
 
 | File                                  | Changes                                 |
