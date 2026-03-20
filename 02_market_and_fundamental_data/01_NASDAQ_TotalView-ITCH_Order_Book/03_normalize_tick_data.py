@@ -27,11 +27,31 @@ pd.set_option('display.float_format', lambda x: '%.2f' % x)
 sns.set_style('whitegrid')
 
 
-# %% [markdown]
+# %%
 stock = 'AAPL'
 # stock = 'AMZN'
 # stock = 'TSLA'
 # stock = 'FB'
+
+# %%
+# ==========================================
+# ⚙️ CHART AGGREGATION PARAMETERS
+# ==========================================
+# Adjust these parameters to change how trades are grouped into bars.
+# - Smaller values = more bars, higher resolution, more noise.
+# - Larger values = fewer bars, smoother charts, less noise (better for ML).
+
+# Time Bars Parameters
+TIME_BAR_FREQ_1 = '1Min'   # Standard 1-minute grouping
+TIME_BAR_FREQ_2 = '5Min'   # Interactive Candlestick frequency (e.g., '15Min', '30S')
+
+# Volume / Dollar Bars Parameters
+# We dynamically calculate a volume/dollar threshold based on a target time interval.
+# For example, if you want a volume bar to form roughly every 5 minutes on average:
+TRADING_DAY_MINUTES = 60 * 7.5   # 6.5h regular trading + 1h extended
+TARGET_BAR_INTERVAL_MINUTES = 1  # We want the threshold to equal on average 5 minutes of trading activity
+# ==========================================
+
 # %%
 # Path configuration – matches the book's data folder structure
 data_path = Path('data')
@@ -213,7 +233,7 @@ def price_volume(df,
     
     # 5. Titles and layout
     axes[0].set_title('Price (VWAP)', fontsize=14)
-    axes[1].set_title('Volume', fontsize=14)
+    axes[1].set_title('Volume (Shares Traded)', fontsize=14)  # Explicitly state Shares so Y-axis makes sense!
     fig.autofmt_xdate()                     # rotate date labels nicely
     fig.suptitle(suptitle, fontsize=16, y=0.98)   # big overall title
     fig.tight_layout()
@@ -245,12 +265,13 @@ def get_bar_stats(agg_trades):
     vol = agg_trades.shares.sum().to_frame('vol')
     txn = agg_trades.shares.size().to_frame('txn')
     return pd.concat([ohlc, vwap, vol, txn], axis=1)
-resampled = trades.groupby(pd.Grouper(freq='1Min'))
+# Group trades strictly by the clock using the defined frequency parameter
+resampled = trades.groupby(pd.Grouper(freq=TIME_BAR_FREQ_1))
 time_bars = get_bar_stats(resampled)
 # Normality test – already much better than raw ticks
-time_result = test_normality(time_bars.vwap.pct_change().dropna(), name="Time Bars (1-Min)", baseline_stat=tick_stat, baseline_p=tick_p)
+time_result = test_normality(time_bars.vwap.pct_change().dropna(), name=f"Time Bars ({TIME_BAR_FREQ_1})", baseline_stat=tick_stat, baseline_p=tick_p)
 price_volume(time_bars,
-suptitle=f'Time Bars | {stock} | {pd.to_datetime(date).date()}',
+suptitle=f'Time Bars ({TIME_BAR_FREQ_1}) | {stock} | {pd.to_datetime(date).date()}',
 fname='time_bars')
 
 # %% [markdown]
@@ -258,10 +279,11 @@ fname='time_bars')
 # 
 # Uses `graph_objects` to render a native inline candlestick chart for interactive visualization of the Time Bars.
 # %%
-resampled = trades.groupby(pd.Grouper(freq='5Min'))
+# Group trades strictly by the clock using the second frequency parameter
+resampled = trades.groupby(pd.Grouper(freq=TIME_BAR_FREQ_2))
 df = get_bar_stats(resampled)
 
-time5_result = test_normality(df.vwap.pct_change().dropna(), name="Time Bars (5-Min)", baseline_stat=tick_stat, baseline_p=tick_p)
+time5_result = test_normality(df.vwap.pct_change().dropna(), name=f"Time Bars ({TIME_BAR_FREQ_2})", baseline_stat=tick_stat, baseline_p=tick_p)
 
 increase = df.close > df.open
 
@@ -275,7 +297,7 @@ fig = go.Figure(data=[go.Candlestick(
 )])
 
 fig.update_layout(
-    title='AAPL Candlestick (5-min)',
+    title=f'AAPL Candlestick ({TIME_BAR_FREQ_2})',
     xaxis_title='Time',
     yaxis_title='Price',
     xaxis_rangeslider_visible=False,
@@ -311,19 +333,25 @@ trades.price = trades.price.mul(1e-4)
 trades = trades[trades.cross == 0]
 trades = trades.between_time(market_open, market_close).drop('cross', axis=1)
 
-trades_per_min = trades.shares.sum() / (60 * 7.5)          # average shares per minute
+# Calculate dynamic threshold: average shares traded per target time interval
+# Adjusting TARGET_BAR_INTERVAL_MINUTES changes the target threshold for forming a volume bar.
+intervals_per_day = TRADING_DAY_MINUTES / TARGET_BAR_INTERVAL_MINUTES
+trades_per_interval = trades.shares.sum() / intervals_per_day
+print(f"Average shares traded per {TARGET_BAR_INTERVAL_MINUTES} minute(s): {trades_per_interval:,.0f}")
 trades['cumul_vol'] = trades.shares.cumsum()
 
 df = trades.reset_index()
-by_vol = df.groupby(df.cumul_vol.div(trades_per_min).round().astype(int))
+# Group trades by integer-dividing cumulative volume by our threshold. 
+# Using floor division (//) prevents the first bucket from being half-sized!
+by_vol = df.groupby((df.cumul_vol // trades_per_interval).astype(int))
 vol_bars = pd.concat([by_vol.timestamp.last().to_frame('timestamp'), 
                       get_bar_stats(by_vol)], axis=1)
 
 price_volume(vol_bars.set_index('timestamp'), 
-             suptitle=f'Volume Bars | {stock} | {pd.to_datetime(date).date()}')
+             suptitle=f'Volume Bars ({TARGET_BAR_INTERVAL_MINUTES}-Min Avg) | {stock} | {pd.to_datetime(date).date()}')
 
 vol_returns = vol_bars.vwap.pct_change().dropna()
-vol_result = test_normality(vol_returns, name="Volume Bars", baseline_stat=tick_stat, baseline_p=tick_p)
+vol_result = test_normality(vol_returns, name=f"Volume Bars ({TARGET_BAR_INTERVAL_MINUTES}-Min Avg)", baseline_stat=tick_stat, baseline_p=tick_p)
 
 # %% [markdown]
 # ## Dollar Bars – Economic-Activity Sampling (Recommended!)
@@ -349,25 +377,32 @@ trades.price = trades.price.mul(1e-4)
 trades = trades[trades.cross == 0]
 trades = trades.between_time(market_open, market_close).drop('cross', axis=1)
 
-value_per_min = trades.shares.mul(trades.price).sum() / (60 * 7.5)
+# Calculate dynamic threshold: average fiat value ($ Price x Shares) traded per target time interval
+# Adjusting TARGET_BAR_INTERVAL_MINUTES changes the target monetary value required to form a new dollar bar.
+intervals_per_day = TRADING_DAY_MINUTES / TARGET_BAR_INTERVAL_MINUTES
+value_per_interval = trades.shares.mul(trades.price).sum() / intervals_per_day
+print(f"Average dollar value traded per {TARGET_BAR_INTERVAL_MINUTES} minute(s): ${value_per_interval:,.0f}")
 trades['cumul_val'] = trades.shares.mul(trades.price).cumsum()
 
 df = trades.reset_index()
-by_value = df.groupby(df.cumul_val.div(value_per_min).round().astype(int))
+# Group trades by integer-dividing cumulative dollar value by our threshold.
+# This recovers the most normal (Gaussian) properties for ML models.
+# Floor division (//) is mathematically required so the first bar is full-sized.
+by_value = df.groupby((df.cumul_val // value_per_interval).astype(int))
 dollar_bars = pd.concat([by_value.timestamp.last().to_frame('timestamp'), 
                          get_bar_stats(by_value)], axis=1)
 
 price_volume(dollar_bars.set_index('timestamp'), 
-             suptitle=f'Dollar Bars | {stock} | {pd.to_datetime(date).date()}')
+             suptitle=f'Dollar Bars ({TARGET_BAR_INTERVAL_MINUTES}-Min Avg) | {stock} | {pd.to_datetime(date).date()}')
 
 dollar_returns = dollar_bars.vwap.pct_change().dropna()
-dollar_result = test_normality(dollar_returns, name="Dollar Bars", baseline_stat=tick_stat, baseline_p=tick_p)
+dollar_result = test_normality(dollar_returns, name=f"Dollar Bars ({TARGET_BAR_INTERVAL_MINUTES}-Min Avg)", baseline_stat=tick_stat, baseline_p=tick_p)
 
 # %% [markdown]
 # ## Normality Summary Table
 # %%
 summary_df = pd.DataFrame({
-    'Bar Type': ['Tick Bars', 'Time Bars (1-Min)', 'Time Bars (5-Min)', 'Volume Bars', 'Dollar Bars'],
+    'Bar Type': ['Tick Bars', f'Time Bars ({TIME_BAR_FREQ_1})', f'Time Bars ({TIME_BAR_FREQ_2})', f'Volume Bars ({TARGET_BAR_INTERVAL_MINUTES}-Min Avg)', f'Dollar Bars ({TARGET_BAR_INTERVAL_MINUTES}-Min Avg)'],
     'Test Statistic': [tick_result.statistic, time_result.statistic, time5_result.statistic, vol_result.statistic, dollar_result.statistic],
     'p-value': [tick_result.pvalue, time_result.pvalue, time5_result.pvalue, vol_result.pvalue, dollar_result.pvalue]
 })
