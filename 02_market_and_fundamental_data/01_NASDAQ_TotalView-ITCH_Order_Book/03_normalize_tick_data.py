@@ -26,12 +26,17 @@ from scipy.stats import normaltest
 pd.set_option('display.float_format', lambda x: '%.2f' % x)
 sns.set_style('whitegrid')
 
+
+# %% [markdown]
+stock = 'AAPL'
+# stock = 'AMZN'
+# stock = 'TSLA'
+# stock = 'FB'
 # %%
 # Path configuration – matches the book's data folder structure
 data_path = Path('data')
 SOURCE_FILE = '10302019.NASDAQ_ITCH50.gz'
 itch_store = str(data_path / (Path(SOURCE_FILE).stem + '.h5'))
-stock = 'AAPL'
 order_book_store = str(data_path / f"{Path(SOURCE_FILE).stem}_{stock}_order_book.h5")
 date = '20191030'
 title = '{} | {}'.format(stock, pd.to_datetime(date).date())
@@ -58,11 +63,32 @@ with pd.HDFStore(itch_store) as store:
     stocks = store['R'].loc[:, ['stock_locate', 'stock']]
     trades = pd.concat([store['P'], store['Q'].rename(columns={'cross_price': 'price'})], sort=False).merge(stocks)
 
-trades['value'] = trades.shares.mul(trades.price)    
+trades['value'] = trades.shares.mul(trades.price.mul(1e-4))    
 trades['value_share'] = trades.value.div(trades.value.sum())
-trade_summary = trades.groupby('stock').value_share.sum().sort_values(ascending=False)
-trade_summary.iloc[:50].plot.bar(figsize=(14, 6), color='darkblue', title='% of Traded Value')
-plt.gca().yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:.0%}'.format(y)))
+
+trade_summary_val = trades.groupby('stock').value.sum().sort_values(ascending=False)
+
+fig, ax1 = plt.subplots(figsize=(14, 6))
+
+# Plot absolute value on primary axis
+trade_summary_val.iloc[:50].plot.bar(ax=ax1, color='darkblue', title='Traded Value Summary (Top 50)')
+ax1.set_ylabel('Total Traded Value ($)')
+ax1.yaxis.set_major_formatter(FuncFormatter(lambda y, _: '${:,.0f}'.format(y)))
+
+# Add horizontal grid lines for the money axis
+ax1.yaxis.grid(True, linestyle='--', alpha=0.7)
+ax1.set_axisbelow(True)
+
+# Create proportional secondary axis for percentages
+ax2 = ax1.twinx()
+total_val = trades.value.sum()
+y1_min, y1_max = ax1.get_ylim()
+ax2.set_ylim(y1_min / total_val, y1_max / total_val)
+ax2.set_ylabel('% of Total Value')
+ax2.yaxis.set_major_formatter(FuncFormatter(lambda y, _: '{:.1%}'.format(y)))
+ax2.grid(False)
+
+fig.tight_layout()
 
 # %% [markdown]
 # ## AAPL Trade Summary – Clean Tick Data
@@ -273,6 +299,10 @@ fig.show()
 # **Pros/Cons**:
 # - (+) Aligns sampling with actual market activity. During earnings or news events, bars are generated rapidly to capture fast changes. During midday lulls, generation slows down.
 # - (-) Does not account for the absolute value of the shares traded. A $10,000 tech stock and a $5 penny stock with the same volume threshold represent vastly different economic activity.
+# 
+# **Q: Why do some Volume Bars still spike significantly above the average threshold?**
+# - **A1: Indivisible Block Trades:** If a single massive institutional trade (e.g., 50,000 shares) exceeds the bar threshold (e.g., 10,000 shares), it cannot be divided. All 50,000 shares land in that bar, causing a massive volume spike.
+# - **A2: Grouping Overshoot:** The efficient `groupby` rounding algorithm we use groups trades by integer-rounding the threshold division. Rapid surges that heavily overshoot a boundary force all that volume into a single bucket.
 # %%
 with pd.HDFStore(order_book_store) as store:
     trades = store['{}/trades'.format(stock)]
@@ -307,6 +337,10 @@ vol_result = test_normality(vol_returns, name="Volume Bars", baseline_stat=tick_
 # **Pros/Cons**:
 # - (+) Highly robust to immense price fluctuations (stock splits, multi-year inflation). Best reflects actual market liquidity and information flow.
 # - (+) Recovers the most Gaussian (normal) statistical properties of returns, making it the most suitable representation for Machine Learning models!
+# 
+# **Q: Why do some Dollar Bars still spike significantly above the average threshold?**
+# - **A1: Indivisible Block Trades:** If a single massive institutional trade exceeds the dollar threshold we set, it cannot be divided into pieces mathematically. It dumps the entire value into the current bar, creating a spike.
+# - **A2: Grouping Overshoot:** Our `groupby` rounding algorithm is optimized for speed. Rapid surges that heavily overshoot the boundary force chunked trades directly into the same rounded integer group.
 # %%
 with pd.HDFStore(order_book_store) as store:
     trades = store['{}/trades'.format(stock)]
