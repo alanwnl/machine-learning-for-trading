@@ -94,8 +94,8 @@ if not sub.empty:
 # ### Get filings
 
 # %%
+aapl_subs = pd.DataFrame()
 if not sub.empty:
-    aapl_subs = pd.DataFrame()
     for s_file in data_path.glob('**/sub.parquet'):
         s_data = pd.read_parquet(s_file)
         aapl_sub = s_data[(s_data.cik.astype(int) == apple.cik) & (s_data.form.isin(['10-Q', '10-K']))]
@@ -105,8 +105,8 @@ if not sub.empty:
 # We find 15 quarterly 10-Q and 4 annual 10-K reports:
 
 # %%
-    if not aapl_subs.empty:
-        print(aapl_subs.form.value_counts())
+if not aapl_subs.empty:
+    print(aapl_subs.form.value_counts())
 
 # %% [markdown]
 # ### Get numerical filing data
@@ -118,22 +118,24 @@ if not sub.empty:
 # First, let's extract all numerical data available from the 19 Apple filings:
 
 # %%
-    aapl_nums = pd.DataFrame()
+aapl_nums = pd.DataFrame()
+if not aapl_subs.empty:
     for num in data_path.glob('**/num.parquet'):
         num_data = pd.read_parquet(num).drop('dimh', axis=1, errors='ignore')
         aapl_num = num_data[num_data.adsh.isin(aapl_subs.adsh)]
         print(len(aapl_num))
         aapl_nums = pd.concat([aapl_nums, aapl_num])
         
-    if not aapl_nums.empty:
-        aapl_nums.ddate = pd.to_datetime(aapl_nums.ddate, format='%Y%m%d')   
-        aapl_nums.to_parquet(data_path / 'aapl_nums.parquet')
+if not aapl_nums.empty:
+    aapl_nums.ddate = pd.to_datetime(aapl_nums.ddate, format='%Y%m%d')   
+    aapl_nums.to_parquet(data_path / 'aapl_nums.parquet')
 
 # %% [markdown]
 # In total, the nine years of filing history provide us with over 18,000 numerical values for AAPL.
 
 # %%
-        aapl_nums.info()
+if not aapl_nums.empty:
+    aapl_nums.info()
 
 # %% [markdown]
 # ## Create P/E Ratio from EPS and stock price data
@@ -142,56 +144,62 @@ if not sub.empty:
 # We can select a useful field, such as Earnings per Diluted Share (EPS), that we can combine with market data to calculate the popular Price/Earnings (P/E) valuation ratio.
 
 # %%
-        stock_split = 7
-        split_date = pd.to_datetime('20140604')
-        print(split_date)
+stock_split = 7
+split_date = pd.to_datetime('20140604')
+print(split_date)
 
 # %% [markdown]
 # We do need to take into account, however, that Apple split its stock 7:1 on June 4, 2014, and Adjusted Earnings per Share before the split to make earnings comparable, as illustrated in the following code block:
 
 # %%
-        # Filter by tag; keep only values measuring 1 quarter
-        eps = aapl_nums[(aapl_nums.tag == 'EarningsPerShareDiluted')
-                        & (aapl_nums.qtrs == 1)].drop('tag', axis=1)
+if not aapl_nums.empty:
+    # Filter by tag; keep only values measuring 1 quarter
+    eps = aapl_nums[(aapl_nums.tag == 'EarningsPerShareDiluted')
+                    & (aapl_nums.qtrs == 1)].drop('tag', axis=1)
 
-        # Keep only most recent data point from each filing
-        eps = eps.groupby('adsh').apply(lambda x: x.nlargest(n=1, columns=['ddate']))
+    # Keep only most recent data point from each filing
+    eps = eps.groupby('adsh').apply(lambda x: x.nlargest(n=1, columns=['ddate']))
 
-        # Adjust earnings prior to stock split downward
-        eps.loc[eps.ddate < split_date,'value'] = eps.loc[eps.ddate < split_date, 'value'].div(7)
-        eps = eps[['ddate', 'value']].set_index('ddate').squeeze().sort_index()
-        eps = eps.rolling(4,min_periods=4).sum().dropna()
-
-# %%
-        eps.plot(lw=2, figsize=(14, 6), title='Diluted Earnings per Share')
-        plt.xlabel('')
-        plt.savefig('diluted eps', dpi=300)
+    # Adjust earnings prior to stock split downward
+    eps.loc[eps.ddate < split_date,'value'] = eps.loc[eps.ddate < split_date, 'value'].div(7)
+    eps = eps[['ddate', 'value']].set_index('ddate').squeeze().sort_index()
+    eps = eps.rolling(4,min_periods=4).sum().dropna()
 
 # %%
-        symbol = 'AAPL.US'
-
-        aapl_stock = (web.
-                      DataReader(symbol, 'quandl', start=eps.index.min())
-                      .resample('D')
-                      .last()
-                     .loc['2014':eps.index.max()])
-        aapl_stock.info()
+if 'eps' in locals() and not eps.empty:
+    eps.plot(lw=2, figsize=(14, 6), title='Diluted Earnings per Share')
+    plt.xlabel('')
+    plt.savefig('diluted eps', dpi=300)
 
 # %%
-        pe = aapl_stock.AdjClose.to_frame('price').join(eps.to_frame('eps'))
-        pe = pe.fillna(method='ffill').dropna()
-        pe['P/E Ratio'] = pe.price.div(pe.eps)
-        pe['P/E Ratio'].plot(lw=2, figsize=(14, 6), title='TTM P/E Ratio')
+symbol = 'AAPL.US'
+
+if 'eps' in locals() and not eps.empty:
+    aapl_stock = (web.
+                  DataReader(symbol, 'quandl', start=eps.index.min())
+                  .resample('D')
+                  .last()
+                 .loc['2014':eps.index.max()])
+    aapl_stock.info()
 
 # %%
-        pe.info()
+if 'aapl_stock' in locals() and not aapl_stock.empty and 'eps' in locals() and not eps.empty:
+    pe = aapl_stock.AdjClose.to_frame('price').join(eps.to_frame('eps'))
+    pe = pe.fillna(method='ffill').dropna()
+    pe['P/E Ratio'] = pe.price.div(pe.eps)
+    pe['P/E Ratio'].plot(lw=2, figsize=(14, 6), title='TTM P/E Ratio')
 
 # %%
-        axes = pe.plot(subplots=True, figsize=(16,8), legend=False, lw=2)
-        axes[0].set_title('Adj. Close Price')
-        axes[1].set_title('Diluted Earnings per Share')
-        axes[2].set_title('Trailing P/E Ratio')
-        plt.tight_layout()
+if 'pe' in locals() and not pe.empty:
+    pe.info()
+
+# %%
+if 'pe' in locals() and not pe.empty:
+    axes = pe.plot(subplots=True, figsize=(16,8), legend=False, lw=2)
+    axes[0].set_title('Adj. Close Price')
+    axes[1].set_title('Diluted Earnings per Share')
+    axes[2].set_title('Trailing P/E Ratio')
+    plt.tight_layout()
 
 # %% [markdown]
 # ## Explore Additional Fields
@@ -200,7 +208,8 @@ if not sub.empty:
 # The field `tag` references values defined in the taxonomy:
 
 # %%
-        print(aapl_nums.tag.value_counts())
+if not aapl_nums.empty:
+    print(aapl_nums.tag.value_counts())
 
 # %% [markdown]
 # We can select values of interest and track their value or use them as inputs to compute fundamental metrics like the Dividend/Share ratio.
@@ -209,24 +218,26 @@ if not sub.empty:
 # ### Dividends per Share
 
 # %%
-        fields = ['EarningsPerShareDiluted',
-                  'PaymentsOfDividendsCommonStock',
-                  'WeightedAverageNumberOfDilutedSharesOutstanding',
-                  'OperatingIncomeLoss',
-                  'NetIncomeLoss',
-                  'GrossProfit']
+fields = ['EarningsPerShareDiluted',
+          'PaymentsOfDividendsCommonStock',
+          'WeightedAverageNumberOfDilutedSharesOutstanding',
+          'OperatingIncomeLoss',
+          'NetIncomeLoss',
+          'GrossProfit']
 
 # %%
-        dividends = (aapl_nums
-                     .loc[aapl_nums.tag == 'PaymentsOfDividendsCommonStock', ['ddate', 'value']]
-                     .groupby('ddate')
-                     .mean())
-        shares = (aapl_nums
-                  .loc[aapl_nums.tag == 'WeightedAverageNumberOfDilutedSharesOutstanding', ['ddate', 'value']]
-                  .drop_duplicates()
-                  .groupby('ddate')
-                  .mean())
-        df = dividends.div(shares).dropna()
+if not aapl_nums.empty:
+    dividends = (aapl_nums
+                 .loc[aapl_nums.tag == 'PaymentsOfDividendsCommonStock', ['ddate', 'value']]
+                 .groupby('ddate')
+                 .mean())
+    shares = (aapl_nums
+              .loc[aapl_nums.tag == 'WeightedAverageNumberOfDilutedSharesOutstanding', ['ddate', 'value']]
+              .drop_duplicates()
+              .groupby('ddate')
+              .mean())
+    df = dividends.div(shares).dropna()
+    if not df.empty:
         ax = df.plot.bar(figsize=(14, 5), title='Dividends per Share', legend=False)
         ax.xaxis.set_major_formatter(mticker.FixedFormatter(df.index.strftime('%Y-%m')))
 
@@ -236,10 +247,13 @@ if not sub.empty:
 # %%
 try:
     txt = pd.read_parquet(data_path / '2016_2' / 'parquet' /  'txt.parquet')
+except FileNotFoundError:
+    print("txt.parquet for 2016_2 not found. Skipping textual information.")
+    txt = pd.DataFrame()
+
 # %% [markdown]
 # AAPL's adsh is not avaialble in the txt file but you can obtain notes from the financial statements here:
 
 # %%
+if not txt.empty:
     print(txt.head())
-except FileNotFoundError:
-    print("txt.parquet for 2016_2 not found. Skipping textual information.")
