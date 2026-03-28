@@ -172,14 +172,25 @@ if 'eps' in locals() and not eps.empty:
     plt.savefig('diluted eps', dpi=300)
 
 # %%
-symbol = 'AAPL.US'
+symbol = 'AAPL'
 
 if 'eps' in locals() and not eps.empty:
-    aapl_stock = (web.
-                  DataReader(symbol, 'quandl', start=eps.index.min())
+    import yfinance as yf
+    aapl_stock = yf.download(symbol, start=eps.index.min())
+    aapl_stock.index = pd.to_datetime(aapl_stock.index).tz_localize(None)
+    aapl_stock = (aapl_stock
                   .resample('D')
                   .last()
-                 .loc['2014':eps.index.max()])
+                  .loc['2014':eps.index.max()])
+    
+    if isinstance(aapl_stock.columns, pd.MultiIndex):
+        aapl_stock.columns = aapl_stock.columns.get_level_values(0)
+        
+    if 'Adj Close' in aapl_stock.columns:
+        aapl_stock = aapl_stock.rename(columns={'Adj Close': 'AdjClose'})
+    elif 'Close' in aapl_stock.columns and 'AdjClose' not in aapl_stock.columns:
+        aapl_stock = aapl_stock.rename(columns={'Close': 'AdjClose'})
+
     aapl_stock.info()
 
 # %%

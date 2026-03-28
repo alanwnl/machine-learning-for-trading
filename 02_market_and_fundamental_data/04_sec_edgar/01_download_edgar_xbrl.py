@@ -1,7 +1,8 @@
 # %% [markdown]
 # # Download FS & Notes Data from SEC's EDGAR service
 
-# %%
+# https://www.sec.gov/data-research/sec-markets-data/financial-statement-data-sets
+# https://www.sec.gov/data-research/sec-markets-data/financial-statement-notes-data-sets# %%
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -28,7 +29,7 @@ FSN_PATH = 'files/dera/data/financial-statement-notes-data-sets/'
 
 # %%
 # Define date range parameters for downloading data
-START_DATE = '2014'
+START_DATE = '2009'
 END_DATE = '2026-12-31'
 
 # %%
@@ -47,25 +48,54 @@ for yr, qtr in tqdm(filing_periods):
 
     path.mkdir(parents=True, exist_ok=True)
     
-    # define url and get file
-    filing = f'{yr}q{qtr}_notes.zip'
-    url = SEC_URL + FSN_PATH + filing
+    # Check if quarterly consolidated file is available first
+    filing_q = f'{yr}q{qtr}_notes.zip'
+    url_q = SEC_URL + FSN_PATH + filing_q
     headers = {'User-Agent': 'MachineLearningForTrading_Student admin@ml4t.com'}
-    response = requests.get(url, headers=headers).content
     
-    # decompress and save
-    try:
-        with ZipFile(BytesIO(response)) as zip_file:
-            for file in zip_file.namelist():
-                local_file = path / file
-                if local_file.exists():
-                    continue
-                with local_file.open('wb') as output:
-                    for line in zip_file.open(file).readlines():
-                        output.write(line)
-    except BadZipFile:
-        print(f'\nBad zip file: {yr} {qtr}\n')
-        continue
+    # Use extremely fast HEAD request to check for file existence
+    if requests.head(url_q, headers=headers).status_code == 200:
+        filings = [filing_q]
+    else:
+        # Fallback to monthly files if quarterly is not available (common for the most recent year)
+        months = [qtr * 3 - 2, qtr * 3 - 1, qtr * 3]
+        filings = [f'{yr}_{m:02d}_notes.zip' for m in months]
+        
+    for filing in filings:
+        url = SEC_URL + FSN_PATH + filing
+        response = requests.get(url, headers=headers)
+        
+        if response.status_code != 200:
+            print(f'\nFile not found (status {response.status_code}): {filing}\n')
+            continue
+            
+        # decompress and save
+        try:
+            with ZipFile(BytesIO(response.content)) as zip_file:
+                for file in zip_file.namelist():
+                    local_file = path / file
+                    is_new = not local_file.exists()
+                    
+                    # Ensure previous file ended with newline when concatenating to avoid corrupted rows
+                    if not is_new:
+                        with local_file.open('rb') as f:
+                            f.seek(-1, 2)
+                            last_char = f.read(1)
+                        if last_char != b'\n':
+                            with local_file.open('ab') as f:
+                                f.write(b'\n')
+                                
+                    # Append mode if file already exists (combining monthly files)
+                    with local_file.open('ab' if not is_new else 'wb') as output:
+                        lines = zip_file.open(file).readlines()
+                        # Skip the header row for subsequent monthly files appended to the same TSV
+                        if not is_new and len(lines) > 0:
+                            lines = lines[1:]  
+                        for line in lines:
+                            output.write(line)
+        except BadZipFile:
+            print(f'\nBad zip file: {filing}\n')
+            continue
 
 # %% [markdown]
 # ## Save to parquet
@@ -87,7 +117,7 @@ for f in tqdm(sorted(list(data_path.glob('**/*.tsv')))):
     file_name = f.stem  + '.parquet'
     if not (parquet_path / file_name).exists():
         try:
-            df = pd.read_csv(f, sep='\t', encoding='latin1', low_memory=False, error_bad_lines=False)
+            df = pd.read_csv(f, sep='\t', encoding='latin1', low_memory=False, on_bad_lines='skip')
             df.to_parquet(parquet_path / file_name)
         except Exception as e:
             print(e, ' | ', f)
