@@ -1,7 +1,7 @@
 # %% [markdown]
 # # Process and Analyze SEC EDGAR XBRL Data — Multi-Company Pipeline
 #
-# This script processes EDGAR XBRL data for multiple companies and produces
+# This script processes EDGAR (Electronic Data Gathering, Analysis, and Retrieval system) XBRL data for multiple companies and produces
 # ML-ready panel datasets with automatic stock split detection.
 #
 # **Output files:**
@@ -31,7 +31,6 @@ import yfinance as yf
 
 import seaborn as sns
 import matplotlib
-matplotlib.use('Agg')  # Non-interactive backend (safe for scripts)
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
@@ -409,8 +408,10 @@ def build_company_features(ticker, nums, split_factors):
     Build a (date → tag) feature matrix for one company.
     
     Strategy:
-    - For each (adsh, tag) combo, keep the most recent data point
-    - Filter to quarterly observations (qtrs == 1) where available
+    - Determine the primary reporting period end date for each filing (adsh)
+    - Filter out historical comparative data older than the primary date
+    - Snap all tags in the filing to the primary date for perfect alignment
+    - Prefer quarterly observations (qtrs == 1) where available
     - Apply split adjustments to per-share metrics
     
     Returns:
@@ -419,12 +420,20 @@ def build_company_features(ticker, nums, split_factors):
     if nums.empty:
         return pd.DataFrame()
     
-    # For each tag in each filing, keep the most recent value
-    # Use qtrs == 1 for flow items (to get quarterly, not cumulative) where available
+    # --- CLEANUP: Align Dates & Drop Historicals ---
+    # 1. Determine primary reporting date per filing (max ddate)
+    adsh_primary = nums.groupby('adsh')['ddate'].max().rename('primary_ddate')
+    nums = nums.merge(adsh_primary, on='adsh')
+    
+    # 2. Filter out data points older than the primary date 
+    # (Allowing a 5-day window for occasional weekend/leap-year tagging artifacts)
+    date_diff = (nums['primary_ddate'] - nums['ddate']).dt.days
+    nums_current = nums[date_diff.abs() <= 5].copy()
+    
     records = []
     
-    for tag in nums.tag.unique():
-        tag_data = nums[nums.tag == tag].copy()
+    for tag in nums_current.tag.unique():
+        tag_data = nums_current[nums_current.tag == tag].copy()
         
         # Prefer quarterly (qtrs==1) observations for flow statements
         if 'qtrs' in tag_data.columns:
@@ -432,7 +441,7 @@ def build_company_features(ticker, nums, split_factors):
             if not quarterly.empty:
                 tag_data = quarterly
         
-        # Keep most recent data point per filing
+        # Keep most recent data point per filing within the current period
         if not tag_data.empty:
             latest = tag_data.groupby('adsh').apply(
                 lambda x: x.nlargest(1, 'ddate'), include_groups=False
@@ -440,15 +449,17 @@ def build_company_features(ticker, nums, split_factors):
             
             for _, row in latest.iterrows():
                 value = row['value']
+                # Snap to primary reporting date to guarantee alignment
+                final_date = row['primary_ddate']
                 
                 # Apply split adjustment for per-share metrics
                 if tag in PER_SHARE_TAGS and not split_factors.empty:
-                    factor = get_split_factor_for_date(split_factors, row['ddate'])
+                    factor = get_split_factor_for_date(split_factors, final_date)
                     if factor > 1:
                         value = value / factor
                 
                 records.append({
-                    'ddate': row['ddate'],
+                    'ddate': final_date,
                     'tag': tag,
                     'value': value
                 })
@@ -459,7 +470,7 @@ def build_company_features(ticker, nums, split_factors):
     records_df = pd.DataFrame(records)
     
     # Pivot: rows=dates, columns=tags
-    # If duplicates exist (same date, same tag from different filings), take the latest value
+    # If duplicates exist across different filings for the same snapped date, take the last
     pivoted = records_df.pivot_table(
         index='ddate', columns='tag', values='value', aggfunc='last'
     )
@@ -713,9 +724,7 @@ if not tier3_core.empty and 'EarningsPerShareDiluted' in tier3_core.columns:
         ax2.grid(True, alpha=0.3)
     
     plt.tight_layout()
-    plt.savefig(data_path / 'multi_company_fundamentals.png', dpi=150, bbox_inches='tight')
-    print("📊 Saved plot → multi_company_fundamentals.png")
-    plt.close()  # Close figure (non-interactive)
+    plt.show()
 
 # %% [markdown]
 # ## Summary
