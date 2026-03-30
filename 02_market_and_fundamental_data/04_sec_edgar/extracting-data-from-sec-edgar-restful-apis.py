@@ -191,16 +191,16 @@ with open(file_name, "w") as f:
 # pip install weasyprint
 
 # %%
-import os
-import sys
+# import os
+# import sys
 
-# Add Homebrew's lib directory to the fallback search path for WeasyPrint dependencies
-if sys.platform == 'darwin':
-    os.environ['DYLD_FALLBACK_LIBRARY_PATH'] = '/opt/homebrew/lib:' + os.environ.get('DYLD_FALLBACK_LIBRARY_PATH', '')
+# # Add Homebrew's lib directory to the fallback search path for WeasyPrint dependencies
+# if sys.platform == 'darwin':
+#     os.environ['DYLD_FALLBACK_LIBRARY_PATH'] = '/opt/homebrew/lib:' + os.environ.get('DYLD_FALLBACK_LIBRARY_PATH', '')
 
-from weasyprint import HTML
+# from weasyprint import HTML
 
-HTML(string=req_content, base_url="").write_pdf(file_name + ".pdf")
+# HTML(string=req_content, base_url="").write_pdf(file_name + ".pdf")
 
 # %%
 # !ls -al .
@@ -322,6 +322,36 @@ url = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{str(CIK).zfill(10)}/dei
 url
 
 # %% [markdown]
-# ![SEC logo](https://www.pngkit.com/png/detail/177-1773725_seal-of-the-united-states-securities-and-exchange.png)
+# ## Retrieving Specific Tags: GrossProfit vs Custom Tags
+# 
+# We can retrieve `GrossProfit` via the `companyconcept` API because it is a standard `us-gaap` tag.
+# 
+# **Important Note:** Custom extensions like `SalesRevenueAutomotive` and `CostOfRevenuesAutomotive` that Tesla uses in its filings are **not available** through the `data.sec.gov` RESTful APIs (`companyconcept` and `companyfacts`). The SEC APIs strictly serve standardized taxonomy tags (`us-gaap`, `dei`, `ifrs-full`, etc.) and filter out company-specific custom extensions. 
+# 
+# To get custom tags like Automotive revenues, you have to use the bulk XBRL Parquet files (as you did previously) or parse the raw XMLs. We can, however, use this REST API method to fetch the standardized `GrossProfit`.
 
+# %%
+# Let's switch back to Tesla's CIK to get GrossProfit
+cik_tsla = "0001318605"
+url_gp = f"https://data.sec.gov/api/xbrl/companyconcept/CIK{cik_tsla}/us-gaap/GrossProfit.json"
+
+gp_response = requests.get(url_gp, headers=header)
+if gp_response.status_code == 200:
+    gp_dict = gp_response.json()
+    gp_df = pd.DataFrame(gp_dict["units"]["USD"])
+    
+    # Filter for standard quarterly/annual frames to clean up the dataframe
+    gp_df = gp_df[gp_df['frame'].notna()].copy()
+    
+    # Format the dates
+    gp_df['end'] = pd.to_datetime(gp_df['end'])
+    gp_df = gp_df.sort_values('end').reset_index(drop=True)
+    
+    print("Successfully fetched GrossProfit! Here are the most recent standard filings:\n")
+    # Display the tail of the dataframe
+    print(gp_df[['end', 'val', 'frame', 'form']].tail(10))
+else:
+    print(f"Failed to fetch GrossProfit data. Status: {gp_response.status_code}")
+
+gp_df
 

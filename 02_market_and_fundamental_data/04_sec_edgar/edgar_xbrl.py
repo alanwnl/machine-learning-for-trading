@@ -16,7 +16,6 @@ from zipfile import ZipFile, BadZipFile
 from tqdm import tqdm
 import requests
 
-import pandas_datareader.data as web
 import yfinance as yf
 import pandas as pd
 
@@ -63,7 +62,7 @@ SEC_URL = 'https://www.sec.gov/'
 FSN_PATH = 'files/dera/data/financial-statement-notes-data-sets/'
 
 # %%
-filing_periods = [(d.year, d.quarter) for d in pd.date_range(START_DATE, END_DATE, freq='Q')]
+filing_periods = [(d.year, d.quarter) for d in pd.date_range(START_DATE, END_DATE, freq='QE')]
 filing_periods
 
 # %%
@@ -267,7 +266,7 @@ aapl_stock.info()
 
 # %%
 pe = aapl_stock.AdjClose.to_frame('price').join(eps.to_frame('eps'))
-pe = pe.fillna(method='ffill').dropna()
+pe = pe.ffill().dropna()
 pe['P/E Ratio'] = pe.price.div(pe.eps)
 pe['P/E Ratio'].plot(lw=2, figsize=(14, 6), title='TTM P/E Ratio');
 
@@ -315,8 +314,8 @@ shares = (aapl_nums
           .groupby('ddate')
           .mean())
 df = dividends.div(shares).dropna()
+df.index = df.index.strftime('%Y-%m')
 ax = df.plot.bar(figsize=(14, 5), title='Dividends per Share', legend=False)
-ax.xaxis.set_major_formatter(mticker.FixedFormatter(df.index.strftime('%Y-%m')))
 
 # %% [markdown]
 #  ## Bonus: Textual Information
