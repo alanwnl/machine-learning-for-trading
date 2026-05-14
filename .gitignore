@@ -40,4 +40,5 @@ __pycache__/
 .gemini/
 .venv/
 venv/
+.venv/
 tesla_shareholder_updates/
